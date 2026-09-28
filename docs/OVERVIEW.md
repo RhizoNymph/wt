@@ -44,7 +44,7 @@ Features Index:
     doc: docs/features/clean.md
   sync:
     description: Pull upstream and integrate the base branch into every worktree
-    entry_points: [src/commands/sync.rs, "wt sync [--stash-pop] [--rebase] [--remote-only]"]
+    entry_points: [src/commands/sync/mod.rs, "wt sync [--stash-pop] [--rebase] [--remote-only]"]
     depends_on: [core]
     doc: docs/features/sync.md
 ```
