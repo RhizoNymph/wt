@@ -209,6 +209,28 @@ impl Git {
         })
     }
 
+    /// Gitignored paths relative to this worktree; wholly-ignored directories are
+    /// listed once (without a trailing slash) rather than file by file.
+    pub fn ignored_paths(&self) -> Result<Vec<PathBuf>, GitError> {
+        let args = [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ];
+        let (output, rendered) = self.output(args)?;
+        if !output.status.success() {
+            return Err(self.failed(rendered, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(|p| PathBuf::from(p.trim_end_matches('/')))
+            .collect())
+    }
+
     pub fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
         let args = ["worktree", "list", "--porcelain", "-z"];
         let (output, rendered) = self.output(args)?;

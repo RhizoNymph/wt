@@ -30,7 +30,7 @@ use remove::Force;
 use report::{
     DetectionMode, DirtyCounts, Failure, FetchOutcome, Outcome, Removed, Scratched, SkippedDirty,
 };
-use scratch::ScratchPlan;
+use scratch::{Exclude, ScratchPlan};
 
 /// Everything per-worktree processing needs.
 struct Ctx<'a> {
@@ -164,7 +164,12 @@ fn process(ctx: &Ctx<'_>, target: &Target) -> Result<Outcome, CleanError> {
     };
     tracing::debug!(branch = %target.branch, evidence = %evidence, "merged");
     let status = Git::new(&target.path).status()?;
-    if status.is_clean() {
+    // Only --scratch preserves gitignored files; other policies discard them like git does.
+    let ignored = match ctx.policy {
+        DirtyPolicy::Scratch => scratch::ignored_to_save(&target.path, exclude(ctx))?,
+        DirtyPolicy::Skip | DirtyPolicy::Delete => Vec::new(),
+    };
+    if status.is_clean() && ignored.is_empty() {
         remove_unless_dry(ctx, target, Force::No)?;
         return Ok(Outcome::Removed(Removed {
             branch: target.branch.clone(),
@@ -191,7 +196,7 @@ fn process(ctx: &Ctx<'_>, target: &Target) -> Result<Outcome, CleanError> {
             }))
         }
         DirtyPolicy::Scratch => {
-            let plan = ScratchPlan::new(&target.path, &status)?;
+            let plan = ScratchPlan::new(&target.path, &status, ignored)?;
             let dest = save_scratch(ctx, target, &plan)?;
             // Only reached once every file is copied: a failed copy keeps the worktree.
             remove_unless_dry(ctx, target, Force::Yes)?;
@@ -200,7 +205,7 @@ fn process(ctx: &Ctx<'_>, target: &Target) -> Result<Outcome, CleanError> {
                 path: target.path.clone(),
                 evidence,
                 dest,
-                copied: plan.files.len(),
+                copied: plan.copied(),
                 not_copied: plan.not_copied,
             }))
         }
@@ -212,16 +217,20 @@ fn save_scratch(
     target: &Target,
     plan: &ScratchPlan,
 ) -> Result<Option<PathBuf>, CleanError> {
-    if plan.files.is_empty() {
+    if plan.is_empty() {
         return Ok(None);
     }
     let base = scratch::base_dest(&ctx.repo.scratch_dir(), &target.branch);
     let dest = if ctx.dry_run {
         scratch::preview_dest(&base)?
     } else {
-        scratch::save(plan, &target.path, &base)?
+        scratch::save(plan, &target.path, &base, exclude(ctx))?
     };
     Ok(Some(dest))
+}
+
+fn exclude<'a>(ctx: &Ctx<'a>) -> Exclude<'a> {
+    Exclude(&ctx.repo.config().scratch_exclude)
 }
 
 fn remove_unless_dry(ctx: &Ctx<'_>, target: &Target, force: Force) -> Result<(), CleanError> {

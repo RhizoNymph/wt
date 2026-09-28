@@ -38,7 +38,7 @@ Features Index:
     depends_on: [core]
     doc: docs/features/checkout.md
   clean:
-    description: Remove worktrees whose PRs merged; skip, scratch-save or delete dirty ones
+    description: Remove worktrees whose PRs merged; skip, scratch-save (incl. gitignored files) or delete dirty ones
     entry_points: [src/commands/clean/mod.rs, "wt clean [--scratch|--delete-dirty] [--dry-run]"]
     depends_on: [core]
     doc: docs/features/clean.md
