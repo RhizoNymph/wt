@@ -565,3 +565,134 @@ fn failure_on_one_worktree_does_not_stop_others() {
     assert_removed(&fx, &good, "feat/b-good");
     assert!(bad.exists());
 }
+
+/// Commit a `.gitignore` on main and push, so worktrees created afterwards share it.
+fn push_gitignore(fx: &Fixture, contents: &str) {
+    fx.commit(&fx.primary, ".gitignore", contents, "add gitignore");
+    fx.git(&fx.primary, &["push", "-q", "origin", "main"]);
+}
+
+#[test]
+fn scratch_saves_ignored_files_of_otherwise_clean_worktree() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, ".env\nsecrets/\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, ".env", "TOKEN=1\n");
+    fx.write(&path, "secrets/deep/key.pem", "key\n");
+
+    let out = fx.wt(&fx.primary, &["clean", "--scratch"]);
+    out.assert_success();
+
+    assert_removed(&fx, &path, "feat/x");
+    let scratch = fx.root.join("scratch").join("feat").join("x");
+    assert_eq!(
+        std::fs::read_to_string(scratch.join(".env")).expect(".env"),
+        "TOKEN=1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("secrets/deep/key.pem")).expect("key"),
+        "key\n"
+    );
+}
+
+#[test]
+fn scratch_saves_ignored_alongside_dirty_but_skips_build_dirs() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, ".env\ntarget/\nnode_modules/\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, "wip.txt", "wip\n");
+    fx.write(&path, ".env", "A=1\n");
+    fx.write(&path, "target/debug/big.bin", "bin\n");
+    fx.write(&path, "web/node_modules/pkg/index.js", "js\n");
+
+    fx.wt(&fx.primary, &["clean", "--scratch"]).assert_success();
+
+    assert_removed(&fx, &path, "feat/x");
+    let scratch = fx.root.join("scratch").join("feat").join("x");
+    assert!(scratch.join("wip.txt").exists());
+    assert!(scratch.join(".env").exists());
+    assert!(
+        !scratch.join("target").exists(),
+        "target/ should be excluded"
+    );
+    assert!(
+        !scratch.join("web/node_modules").exists(),
+        "nested node_modules should be excluded"
+    );
+}
+
+#[test]
+fn excluded_dirs_inside_ignored_dir_are_skipped() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, "local/\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, "local/notes.md", "n\n");
+    fx.write(&path, "local/node_modules/dep.js", "d\n");
+
+    fx.wt(&fx.primary, &["clean", "--scratch"]).assert_success();
+
+    let scratch = fx.root.join("scratch").join("feat").join("x");
+    assert!(scratch.join("local/notes.md").exists());
+    assert!(!scratch.join("local/node_modules").exists());
+}
+
+#[test]
+fn scratch_exclude_config_overrides_defaults() {
+    let fx = Fixture::new();
+    fx.write_config(r#"{"scratch_exclude": ["logs"]}"#);
+    push_gitignore(&fx, "target/\nlogs/\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, "target/out.txt", "o\n");
+    fx.write(&path, "logs/run.log", "l\n");
+
+    fx.wt(&fx.primary, &["clean", "--scratch"]).assert_success();
+
+    let scratch = fx.root.join("scratch").join("feat").join("x");
+    assert!(scratch.join("target/out.txt").exists());
+    assert!(!scratch.join("logs").exists());
+}
+
+#[test]
+fn only_excluded_ignored_files_means_plain_removal() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, "target/\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, "target/out.txt", "o\n");
+
+    fx.wt(&fx.primary, &["clean", "--scratch"]).assert_success();
+
+    assert_removed(&fx, &path, "feat/x");
+    assert!(!fx.root.join("scratch").exists());
+}
+
+#[test]
+fn ignored_files_do_not_block_default_clean() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, ".env\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, ".env", "A=1\n");
+
+    fx.wt(&fx.primary, &["clean"]).assert_success();
+    assert_removed(&fx, &path, "feat/x");
+}
+
+#[test]
+fn dry_run_scratch_with_ignored_changes_nothing() {
+    let fx = Fixture::new();
+    push_gitignore(&fx, ".env\n");
+    let (path, _) = worktree_with_commit(&fx, "feat/x");
+    merge_no_ff(&fx, "feat/x");
+    fx.write(&path, ".env", "A=1\n");
+
+    let out = fx.wt(&fx.primary, &["clean", "--scratch", "--dry-run"]);
+    out.assert_success();
+    assert_kept(&fx, &path, "feat/x");
+    assert!(!fx.root.join("scratch").exists());
+    assert!(out.stdout.contains("scratch"), "{}", out.stdout);
+}

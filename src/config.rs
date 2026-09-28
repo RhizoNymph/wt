@@ -14,6 +14,19 @@ pub const CONFIG_ENV: &str = "WT_CONFIG";
 pub const REPO_CONFIG_FILE: &str = ".wt.json";
 pub const DEFAULT_WORKTREE_DIR: &str = "..";
 pub const DEFAULT_REMOTE: &str = "origin";
+/// Directory names skipped when `clean --scratch` saves gitignored files.
+pub const DEFAULT_SCRATCH_EXCLUDE: &[&str] = &[
+    "target",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".gradle",
+    ".next",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -22,6 +35,8 @@ pub struct Config {
     /// Explicit base branch; `None` means auto-detect from `<remote>/HEAD`.
     pub base_branch: Option<BranchName>,
     pub remote: String,
+    /// Path components excluded when saving gitignored files to scratch.
+    pub scratch_exclude: Vec<String>,
 }
 
 /// One source of configuration; every field optional so layers can be merged.
@@ -31,6 +46,7 @@ struct Layer {
     worktree_dir: Option<PathBuf>,
     base_branch: Option<String>,
     remote: Option<String>,
+    scratch_exclude: Option<Vec<String>>,
 }
 
 impl Layer {
@@ -58,6 +74,7 @@ impl Layer {
             worktree_dir: git.config_get("wt.dir")?.map(PathBuf::from),
             base_branch: git.config_get("wt.base")?,
             remote: git.config_get("wt.remote")?,
+            scratch_exclude: None,
         })
     }
 
@@ -67,6 +84,7 @@ impl Layer {
             worktree_dir: other.worktree_dir.or(self.worktree_dir),
             base_branch: other.base_branch.or(self.base_branch),
             remote: other.remote.or(self.remote),
+            scratch_exclude: other.scratch_exclude.or(self.scratch_exclude),
         }
     }
 }
@@ -101,6 +119,12 @@ impl Config {
                 .map(BranchName::parse)
                 .transpose()?,
             remote: layer.remote.unwrap_or_else(|| DEFAULT_REMOTE.to_owned()),
+            scratch_exclude: layer.scratch_exclude.unwrap_or_else(|| {
+                DEFAULT_SCRATCH_EXCLUDE
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect()
+            }),
         })
     }
 }
@@ -115,16 +139,19 @@ mod tests {
             worktree_dir: Some("a".into()),
             base_branch: Some("main".into()),
             remote: None,
+            scratch_exclude: Some(vec!["a".into()]),
         };
         let b = Layer {
             worktree_dir: Some("b".into()),
             base_branch: None,
             remote: Some("up".into()),
+            scratch_exclude: None,
         };
         let merged = a.overlay(b);
         assert_eq!(merged.worktree_dir, Some(PathBuf::from("b")));
         assert_eq!(merged.base_branch.as_deref(), Some("main"));
         assert_eq!(merged.remote.as_deref(), Some("up"));
+        assert_eq!(merged.scratch_exclude, Some(vec!["a".to_owned()]));
     }
 
     #[test]

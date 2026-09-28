@@ -19,8 +19,9 @@ branches) whose work has been merged.
 - Worktrees outside the worktree root, the primary checkout, the base branch's worktree,
   and anything under `<root>/scratch` (never candidates).
 - Cleaning up old scratch directories.
-- Preserving gitignored files: `git worktree remove` deletes them (git semantics), even
-  for clean worktrees. `--scratch` copies only what `git status` reports.
+- Preserving gitignored files outside `--scratch`: default and `--delete-dirty` runs
+  let `git worktree remove` delete them (git semantics), and ignored files never make a
+  worktree count as dirty.
 
 ## Data / control flow
 1. `run` captures the canonical current directory (it may vanish later), resolves the
@@ -43,13 +44,17 @@ branches) whose work has been merged.
    and processing continues):
    1. `MergeDetector::evaluate` → `MergeStatus::{Merged(MergeEvidence), NotMerged}`.
       Not merged → counted.
-   2. `Git::new(path).status()`.
-   3. Clean → `git worktree remove <path>` (no force: git itself refuses if the tree
+   2. `Git::new(path).status()`; with `--scratch` also `scratch::ignored_to_save`
+      (`git ls-files --others --ignored --exclude-standard --directory`, minus paths with
+      a component in `config.scratch_exclude`).
+   3. Clean (and, with `--scratch`, no ignored files left after exclusion) → `git worktree remove <path>` (no force: git itself refuses if the tree
       became dirty in the meantime) → `git branch -D <branch>` → remove empty parents.
    4. Dirty + `Skip` → `SkippedDirty` with modified/untracked counts.
    5. Dirty + `Delete` → `git worktree remove --force`, `branch -D`, parents.
-   6. Dirty + `Scratch` → `ScratchPlan::new` (every status path that exists on disk is
-      copied; others are listed as not copied with their `ChangeKind`), `scratch::save`
+   6. Dirty or has saveable ignored files + `Scratch` → `ScratchPlan::new` (every status
+      path that exists on disk is copied; others are listed as not copied with their
+      `ChangeKind`; ignored paths are copied too, recursing into ignored directories
+      while skipping excluded names), `scratch::save`
       claims a fresh directory and copies the files preserving relative paths, and only
       after every copy succeeds is the worktree force-removed and the branch deleted.
       If nothing exists to copy, no scratch directory is created.
@@ -85,6 +90,12 @@ atomic `create_dir`; if all are taken the worktree fails (kept) with
 `CleanError::ScratchExhausted`. Symlinks are recreated as symlinks; untracked
 directories reported whole (e.g. nested repositories) are copied recursively.
 
+Gitignored files (`.env`, local config, notes) are saved alongside dirty files. Names in
+`scratch_exclude` (config; default `target`, `node_modules`, `.venv`, `venv`,
+`__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.next`) are
+skipped at any depth inside ignored content, so rebuildable build/dependency output is
+not copied. The exclusion never applies to dirty (non-ignored) files.
+
 ## Files
 | File | Role | Key exports |
 |---|---|---|
@@ -92,7 +103,7 @@ directories reported whole (e.g. nested repositories) are copied recursively.
 | `src/commands/clean/candidates.rs` | Worktree classification | `Target`, `Skipped`, `SkipReason`, `Classified`, `classify` |
 | `src/commands/clean/github.rs` | `gh pr list` invocation and parsing | `GH_ENV`, `PR_LIMIT`, `MergedPr`, `PrIndex`, `merged_prs`, `parse_prs` |
 | `src/commands/clean/merged.rs` | Merge evidence and the safety rule | `MergeEvidence`, `MergeStatus`, `Detection`, `MergeDetector` |
-| `src/commands/clean/scratch.rs` | Scratch planning, destination choice, copying | `ScratchPlan`, `NotCopied`, `base_dest`, `preview_dest`, `save` |
+| `src/commands/clean/scratch.rs` | Scratch planning, destination choice, copying | `ScratchPlan`, `NotCopied`, `Exclude`, `ignored_to_save`, `base_dest`, `preview_dest`, `save` |
 | `src/commands/clean/remove.rs` | Worktree + branch removal, empty-parent cleanup | `Force`, `remove`, `remove_empty_parents` |
 | `src/commands/clean/report.rs` | Typed report and its `Display` | `CleanReport`, `Outcome`, `Removed`, `Scratched`, `SkippedDirty`, `Failure`, `DirtyCounts`, `DetectionMode`, `FetchOutcome` |
 | `src/commands/clean/error.rs` | Typed errors | `CleanError`, `GhError` |
