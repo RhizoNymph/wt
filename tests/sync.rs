@@ -463,3 +463,22 @@ fn up_to_date_worktrees_report_so() {
     assert!(out.stdout.contains("up to date"), "{}", out.stdout);
     assert!(out.stdout.contains("feat/x"), "{}", out.stdout);
 }
+
+#[test]
+fn local_mode_header_quotes_the_actual_fetch_error() {
+    let fx = Fixture::new();
+    fx.break_remote();
+    let out = fx.wt_plain(&fx.primary, &["sync"]);
+    out.assert_success();
+    assert!(
+        out.stdout
+            .contains("does not appear to be a git repository"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("and the repository exists"),
+        "{}",
+        out.stdout
+    );
+}

@@ -4,5 +4,6 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod git;
+pub mod progress;
 pub mod repo;
 pub mod shell;
