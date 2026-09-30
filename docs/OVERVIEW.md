@@ -18,11 +18,14 @@ Overview:
     shell: shell integration (src/shell.rs) - `wt init <shell>` wrapper function and
       the WT_CD_FILE cd-directive channel.
     commands: one module per subcommand (src/commands/) consuming repo + git.
+    progress: stderr progress (src/progress.rs) - indicatif bar on terminals, plain
+      lines otherwise, hidden with --quiet.
   data_flow: >
     main parses Cli -> (init short-circuits) -> Repo::discover(cwd) runs
     `git worktree list` to find the primary checkout, loads Config from it and
     resolves the worktree root -> the command module queries Repo/Git, performs git
-    operations, and prints a report to stdout. Directory changes are requested via
+    operations (reporting phases and per-worktree steps through a Progress handle on
+    stderr), and prints a report to stdout. Directory changes are requested via
     shell::request_cd, which writes the path to $WT_CD_FILE for the shell wrapper
     (or prints it to stdout without the wrapper). Commands return an ExitCode;
     errors surface as anyhow chains over typed thiserror errors.
@@ -47,4 +50,9 @@ Features Index:
     entry_points: [src/commands/sync/mod.rs, "wt sync [--stash-pop] [--rebase] [--remote-only]"]
     depends_on: [core]
     doc: docs/features/sync.md
+  progress:
+    description: Progress bar / progress lines on stderr for checkout, clean and sync; -q hides it
+    entry_points: [src/progress.rs, "wt -q <command>"]
+    depends_on: [core]
+    doc: docs/features/progress.md
 ```

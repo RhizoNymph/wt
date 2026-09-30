@@ -13,6 +13,7 @@ use crate::branch::BranchName;
 use crate::cli::{FetchPolicy, SyncArgs};
 use crate::error::{GitError, RepoError};
 use crate::git::Git;
+use crate::progress::Progress;
 use crate::repo::Repo;
 
 pub use refs::RefName;
@@ -36,8 +37,10 @@ pub enum SyncError {
     Repo(#[from] RepoError),
 }
 
-pub fn run(repo: &Repo, args: &SyncArgs) -> anyhow::Result<ExitCode> {
-    let report = sync(repo, args)?;
+pub fn run(repo: &Repo, args: &SyncArgs, progress: &Progress) -> anyhow::Result<ExitCode> {
+    let report = sync(repo, args, progress);
+    progress.finish();
+    let report = report?;
     println!("{report}");
     Ok(if report.has_failures() {
         ExitCode::FAILURE
@@ -46,8 +49,9 @@ pub fn run(repo: &Repo, args: &SyncArgs) -> anyhow::Result<ExitCode> {
     })
 }
 
-pub fn sync(repo: &Repo, args: &SyncArgs) -> Result<SyncReport, SyncError> {
+pub fn sync(repo: &Repo, args: &SyncArgs, progress: &Progress) -> Result<SyncReport, SyncError> {
     let remote = repo.remote().to_owned();
+    progress.phase(format!("fetching {remote}"));
     let mode = fetch(repo.git(), &remote, args.fetch_policy())?;
     let base_branch = repo.base_branch()?;
     let source = match mode {
@@ -72,9 +76,15 @@ pub fn sync(repo: &Repo, args: &SyncArgs) -> Result<SyncReport, SyncError> {
     // Base worktrees first so its local branch is current before others integrate it.
     worktrees.sort_by_key(|wt| !is_on(wt.branch(), &plan.base_branch));
     // Sequential on purpose: all worktrees share one git dir and stash stack.
+    progress.items(worktrees.len());
     let reports = worktrees
         .iter()
-        .map(|wt| sync_worktree(wt, &plan))
+        .map(|wt| {
+            progress.item(item_label(wt));
+            let report = sync_worktree(wt, &plan, progress);
+            progress.item_done();
+            report
+        })
         .collect();
 
     Ok(SyncReport {
@@ -83,6 +93,12 @@ pub fn sync(repo: &Repo, args: &SyncArgs) -> Result<SyncReport, SyncError> {
         base: plan.base_ref,
         worktrees: reports,
     })
+}
+
+/// Branch name, or the path for worktrees without one (detached/bare).
+fn item_label(wt: &crate::git::Worktree) -> String {
+    wt.branch()
+        .map_or_else(|| wt.path.display().to_string(), ToString::to_string)
 }
 
 fn is_on(branch: Option<&BranchName>, base: &BranchName) -> bool {
@@ -98,7 +114,14 @@ fn fetch(git: &Git, remote: &str, policy: FetchPolicy) -> Result<Mode, SyncError
     }
     let detail = match git.failed(rendered, &output) {
         GitError::Failed { stderr, .. } if !stderr.is_empty() => {
-            stderr.lines().last().unwrap_or_default().to_owned()
+            // The first `fatal:` line names the problem; later lines are generic advice.
+            let first = stderr.lines().find(|l| !l.trim().is_empty());
+            stderr
+                .lines()
+                .find(|l| l.starts_with("fatal:"))
+                .or(first)
+                .unwrap_or_default()
+                .to_owned()
         }
         other => other.to_string(),
     };

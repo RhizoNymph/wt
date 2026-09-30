@@ -17,6 +17,7 @@ use anyhow::Context;
 
 use crate::cli::{CleanArgs, DirtyPolicy};
 use crate::git::Git;
+use crate::progress::Progress;
 use crate::repo::Repo;
 use crate::shell;
 
@@ -38,15 +39,18 @@ struct Ctx<'a> {
     detector: MergeDetector<'a>,
     policy: DirtyPolicy,
     dry_run: bool,
+    progress: &'a Progress,
 }
 
-pub fn run(repo: &Repo, args: &CleanArgs) -> anyhow::Result<ExitCode> {
+pub fn run(repo: &Repo, args: &CleanArgs, progress: &Progress) -> anyhow::Result<ExitCode> {
     // Captured first: the directory may not exist once its worktree is removed.
     let cwd = std::env::current_dir()
         .ok()
         .and_then(|d| d.canonicalize().ok());
     let base = repo.base_branch().context("resolving the base branch")?;
+    progress.phase(format!("fetching {}", repo.remote()));
     let fetch = fetch_remote(repo);
+    progress.phase("checking merged pull requests on GitHub");
     let detection = detect_source(repo.primary());
     let detection_mode = match &detection {
         Detection::GitHub(index) => DetectionMode::GitHub {
@@ -62,6 +66,7 @@ pub fn run(repo: &Repo, args: &CleanArgs) -> anyhow::Result<ExitCode> {
             .context("resolving base refs")?,
         policy: args.dirty_policy(),
         dry_run: args.dry_run,
+        progress,
     };
     tracing::debug!(base = %base, policy = ?ctx.policy, dry_run = ctx.dry_run, detection = ?ctx.detector.detection(), "clean");
 
@@ -71,8 +76,12 @@ pub fn run(repo: &Repo, args: &CleanArgs) -> anyhow::Result<ExitCode> {
     let mut report = CleanReport::new(ctx.dry_run, detection_mode, fetch);
     report.skipped = classified.skipped;
     prune_stale(&ctx, classified.prunable, &mut report);
+    progress.items(classified.targets.len());
     for target in classified.targets {
-        match process(&ctx, &target) {
+        progress.item(target.branch.to_string());
+        let result = process(&ctx, &target);
+        progress.item_done();
+        match result {
             Ok(outcome) => report.record(outcome),
             Err(error) => {
                 tracing::warn!(branch = %target.branch, path = %target.path.display(), error = %error, "clean failed");
@@ -85,6 +94,7 @@ pub fn run(repo: &Repo, args: &CleanArgs) -> anyhow::Result<ExitCode> {
         }
     }
 
+    progress.finish();
     print!("{report}");
     if let Some(cwd) = cwd {
         let inside_removed = report
@@ -155,6 +165,8 @@ fn prune_stale(ctx: &Ctx<'_>, prunable: Vec<PathBuf>, report: &mut CleanReport) 
 }
 
 fn process(ctx: &Ctx<'_>, target: &Target) -> Result<Outcome, CleanError> {
+    ctx.progress
+        .detail(format!("{}: checking whether it is merged", target.branch));
     let evidence = match ctx.detector.evaluate(&target.branch, &target.tip)? {
         MergeStatus::Merged(e) => e,
         MergeStatus::NotMerged => {
@@ -163,6 +175,8 @@ fn process(ctx: &Ctx<'_>, target: &Target) -> Result<Outcome, CleanError> {
         }
     };
     tracing::debug!(branch = %target.branch, evidence = %evidence, "merged");
+    ctx.progress
+        .detail(format!("{}: checking for local changes", target.branch));
     let status = Git::new(&target.path).status()?;
     // Only --scratch preserves gitignored files; other policies discard them like git does.
     let ignored = match ctx.policy {
@@ -224,6 +238,8 @@ fn save_scratch(
     let dest = if ctx.dry_run {
         scratch::preview_dest(&base)?
     } else {
+        ctx.progress
+            .detail(format!("{}: saving files to scratch", target.branch));
         scratch::save(plan, &target.path, &base, exclude(ctx))?
     };
     Ok(Some(dest))
@@ -237,5 +253,7 @@ fn remove_unless_dry(ctx: &Ctx<'_>, target: &Target, force: Force) -> Result<(),
     if ctx.dry_run {
         return Ok(());
     }
+    ctx.progress
+        .detail(format!("{}: removing worktree", target.branch));
     remove::remove(ctx.repo.git(), target, force, ctx.repo.root())
 }

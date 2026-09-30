@@ -66,6 +66,15 @@ pub struct Cli {
         help_heading = "Global options"
     )]
     pub verbose: u8,
+    /// Hide progress output (reports and warnings are still printed).
+    #[arg(
+        short,
+        long,
+        global = true,
+        conflicts_with = "verbose",
+        help_heading = "Global options"
+    )]
+    pub quiet: bool,
     #[command(subcommand)]
     pub command: Command,
 }

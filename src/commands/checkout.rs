@@ -9,6 +9,7 @@ use crate::branch::BranchName;
 use crate::cli::CheckoutArgs;
 use crate::error::{GitError, RepoError};
 use crate::git::{Git, HeadKind, Worktree};
+use crate::progress::Progress;
 use crate::repo::Repo;
 use crate::shell;
 
@@ -92,8 +93,10 @@ enum FetchOutcome {
     },
 }
 
-pub fn run(repo: &Repo, args: &CheckoutArgs) -> anyhow::Result<ExitCode> {
-    let outcome = checkout(repo, &args.branch, args.from.as_deref())?;
+pub fn run(repo: &Repo, args: &CheckoutArgs, progress: &Progress) -> anyhow::Result<ExitCode> {
+    let outcome = checkout(repo, &args.branch, args.from.as_deref(), progress);
+    progress.finish();
+    let outcome = outcome?;
     let path = outcome.path();
     match &outcome {
         Outcome::Existing { .. } => {
@@ -125,6 +128,7 @@ pub fn checkout(
     repo: &Repo,
     branch: &BranchName,
     from: Option<&str>,
+    progress: &Progress,
 ) -> Result<Outcome, CheckoutError> {
     let path = repo.path_for(branch)?;
     let mut worktrees = repo.worktrees()?;
@@ -149,7 +153,8 @@ pub fn checkout(
         });
     }
 
-    let source = resolve_source(repo, branch, from)?;
+    let source = resolve_source(repo, branch, from, progress)?;
+    progress.phase(format!("creating worktree at {}", path.display()));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CheckoutError::Io {
             path: parent.to_owned(),
@@ -206,18 +211,19 @@ fn resolve_source(
     repo: &Repo,
     branch: &BranchName,
     from: Option<&str>,
+    progress: &Progress,
 ) -> Result<Source, CheckoutError> {
     let git = repo.git();
     let remote = repo.remote();
 
     if git.local_branch_exists(branch)? {
-        warn_ignored_from(from);
+        warn_ignored_from(from, progress);
         return Ok(Source::Local);
     }
 
-    let fetched = fetch_branch(git, remote, branch)?;
+    let fetched = fetch_branch(git, remote, branch, progress)?;
     if git.remote_branch_exists(remote, branch)? {
-        warn_ignored_from(from);
+        warn_ignored_from(from, progress);
         return Ok(Source::Remote {
             upstream: format!("{remote}/{branch}"),
         });
@@ -237,7 +243,7 @@ fn resolve_source(
     let base = repo.base_branch()?;
     // Only worth another round-trip if the remote answered the first fetch.
     if !matches!(fetched, FetchOutcome::Unreachable { .. }) {
-        fetch_branch(git, remote, &base)?;
+        fetch_branch(git, remote, &base, progress)?;
     }
     let start = if git.remote_branch_exists(remote, &base)? {
         format!("{remote}/{base}")
@@ -247,9 +253,11 @@ fn resolve_source(
     Ok(Source::New { start })
 }
 
-fn warn_ignored_from(from: Option<&str>) {
+fn warn_ignored_from(from: Option<&str>, progress: &Progress) {
     if let Some(rev) = from {
-        eprintln!("warning: branch already exists; ignoring --from {rev}");
+        progress.println(format!(
+            "warning: branch already exists; ignoring --from {rev}"
+        ));
     }
 }
 
@@ -258,7 +266,9 @@ fn fetch_branch(
     git: &Git,
     remote: &str,
     branch: &BranchName,
+    progress: &Progress,
 ) -> Result<FetchOutcome, CheckoutError> {
+    progress.phase(format!("fetching {branch} from {remote}"));
     let (output, _) = git.output(["fetch", "--quiet", "--no-tags", remote, branch.as_str()])?;
     let outcome = if output.status.success() {
         FetchOutcome::Fetched
@@ -275,9 +285,9 @@ fn fetch_branch(
     match &outcome {
         FetchOutcome::Unreachable { detail } => {
             tracing::debug!(remote, branch = %branch, detail = %detail, "fetch failed");
-            eprintln!(
+            progress.println(format!(
                 "warning: could not fetch {branch} from {remote}; continuing with local refs"
-            );
+            ));
         }
         other => tracing::debug!(remote, branch = %branch, outcome = ?other, "fetch"),
     }

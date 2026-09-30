@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use wt::cli::{Cli, Command};
 use wt::commands;
+use wt::progress::{Display, Progress};
 use wt::repo::Repo;
 use wt::shell;
 
@@ -49,10 +50,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let repo = Repo::discover(&cwd)?;
     tracing::debug!(primary = %repo.primary().display(), root = %repo.root().display(), "repo");
+    let progress = Progress::new(Display::detect(cli.quiet, cli.verbose));
     match &cli.command {
-        Command::Checkout(args) => commands::checkout::run(&repo, args),
-        Command::Clean(args) => commands::clean::run(&repo, args),
-        Command::Sync(args) => commands::sync::run(&repo, args),
+        Command::Checkout(args) => commands::checkout::run(&repo, args, &progress),
+        Command::Clean(args) => commands::clean::run(&repo, args, &progress),
+        Command::Sync(args) => commands::sync::run(&repo, args, &progress),
         Command::Init(_) => Ok(ExitCode::SUCCESS),
     }
 }

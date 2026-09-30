@@ -4,6 +4,7 @@ use crate::branch::BranchName;
 use crate::cli::Integration;
 use crate::error::GitError;
 use crate::git::{ChangeKind, Git, HeadKind, Worktree};
+use crate::progress::Progress;
 
 use super::integrate::{IntegrateError, integrate};
 use super::refs::{RefName, operation_in_progress, upstream};
@@ -59,7 +60,7 @@ impl StepFailure {
     }
 }
 
-pub fn sync_worktree(wt: &Worktree, plan: &Plan) -> WorktreeReport {
+pub fn sync_worktree(wt: &Worktree, plan: &Plan, progress: &Progress) -> WorktreeReport {
     let branch = wt.branch().cloned();
     let outcome = match &wt.kind {
         HeadKind::Detached => WorktreeOutcome::Skipped(SkipReason::Detached),
@@ -68,7 +69,7 @@ pub fn sync_worktree(wt: &Worktree, plan: &Plan) -> WorktreeReport {
             tracing::warn!(branch = %b, path = %wt.path.display(), "worktree directory missing");
             WorktreeOutcome::Skipped(SkipReason::Missing)
         }
-        HeadKind::Branch(b) => sync_branch(&Git::new(&wt.path), b, plan),
+        HeadKind::Branch(b) => sync_branch(&Git::new(&wt.path), b, plan, progress),
     };
     tracing::info!(path = %wt.path.display(), outcome = %outcome, "worktree synced");
     WorktreeReport {
@@ -86,7 +87,13 @@ fn failed_git(err: impl ToString) -> WorktreeOutcome {
     }
 }
 
-fn sync_branch(git: &Git, branch: &BranchName, plan: &Plan) -> WorktreeOutcome {
+fn sync_branch(
+    git: &Git,
+    branch: &BranchName,
+    plan: &Plan,
+    progress: &Progress,
+) -> WorktreeOutcome {
+    progress.detail(format!("{branch}: checking status"));
     let status = match git.status() {
         Ok(s) => s,
         Err(e) => return failed_git(e),
@@ -108,6 +115,7 @@ fn sync_branch(git: &Git, branch: &BranchName, plan: &Plan) -> WorktreeOutcome {
     } else if !plan.stash_pop {
         return WorktreeOutcome::Skipped(SkipReason::Dirty);
     } else {
+        progress.detail(format!("{branch}: stashing local changes"));
         match StashedChanges::push(git) {
             Ok(s) => Some(s),
             Err(e) => {
@@ -120,12 +128,15 @@ fn sync_branch(git: &Git, branch: &BranchName, plan: &Plan) -> WorktreeOutcome {
         }
     };
 
-    let result = run_steps(git, branch, plan);
+    let result = run_steps(git, branch, plan, progress);
 
     let stash_outcome = match (stash, &result) {
         (None, _) => StashOutcome::NotNeeded,
         (Some(s), Err(f)) if f.left_in_progress => s.keep(),
-        (Some(s), _) => s.restore(git),
+        (Some(s), _) => {
+            progress.detail(format!("{branch}: restoring stashed changes"));
+            s.restore(git)
+        }
     };
     match result {
         Ok((upstream, base)) => WorktreeOutcome::Synced {
@@ -147,18 +158,23 @@ fn run_steps(
     git: &Git,
     branch: &BranchName,
     plan: &Plan,
+    progress: &Progress,
 ) -> Result<(UpstreamStep, BaseStep), StepFailure> {
     let upstream_step = match upstream(git, branch).map_err(|e| StepFailure::git(None, e))? {
         None => UpstreamStep::NoUpstream,
-        Some(up) => match integrate(git, &up, plan.integration) {
-            Ok(Some(done)) => UpstreamStep::Integrated(done),
-            Ok(None) => UpstreamStep::UpToDate,
-            Err(e) => return Err(StepFailure::new(None, e)),
-        },
+        Some(up) => {
+            progress.detail(format!("{branch}: pulling {}", up.short));
+            match integrate(git, &up, plan.integration) {
+                Ok(Some(done)) => UpstreamStep::Integrated(done),
+                Ok(None) => UpstreamStep::UpToDate,
+                Err(e) => return Err(StepFailure::new(None, e)),
+            }
+        }
     };
     if *branch == plan.base_branch {
         return Ok((upstream_step, BaseStep::IsBase));
     }
+    progress.detail(format!("{branch}: integrating {}", plan.base_ref.short));
     let base_step = match integrate(git, &plan.base_ref, plan.integration) {
         Ok(Some(done)) => BaseStep::Integrated(done),
         Ok(None) => BaseStep::UpToDate,
