@@ -29,7 +29,7 @@
 |---|---|---|
 | `src/main.rs` | Entry: tracing init, dispatch, error → exit code | — |
 | `src/lib.rs` | Module tree | — |
-| `src/cli.rs` | clap types and flag → policy conversion | `Cli`, `Command`, `*Args`, `DirtyPolicy`, `Integration`, `FetchPolicy` |
+| `src/cli.rs` | clap types, help text (about/long_about/examples) and flag → policy conversion | `Cli`, `Command`, `*Args`, `DirtyPolicy`, `Integration`, `FetchPolicy` |
 | `src/error.rs` | Typed errors | `GitError`, `BranchNameError`, `ConfigError`, `RepoError` |
 | `src/branch.rs` | Branch name validation, path mapping | `BranchName` |
 | `src/git/mod.rs` | Git runner and ref helpers (incl. `ignored_paths`) | `Git`, `Divergence` |
@@ -50,9 +50,15 @@ replaces the default list) names path components `clean --scratch` never copies 
 gitignored content; see `clean.md`.
 
 ## Invariants and constraints
+- Help: bare `wt`, `wt checkout` and `wt init` print help (with setup/examples) instead
+  of a missing-argument error (`arg_required_else_help`); `-C`/`-v` are listed under
+  "Global options". Help text must stay in sync with command behavior (`tests/help.rs`).
 - `BranchName` enforces git ref-format rules, so `rel_path()` never contains `.`/`..`
   components or an absolute prefix: worktree paths cannot escape the root.
 - Branches whose first component is `scratch` are rejected by `path_for` (reserved for `clean --scratch`).
+- Logging: default level is `error` because commands report warnings (fetch fallback,
+  skipped worktrees, kept stashes) in their own stdout reports; `-v`/`-vv`/`WT_LOG`
+  expose tracing logs. ANSI colors only when stderr is a terminal.
 - Every git call sets `LC_ALL=C` and `GIT_TERMINAL_PROMPT=0`; network failures never hang on prompts.
 - `Git::check` treats exit 1 as `false` and any other non-zero exit as an error.
 - The git stash stack is shared by all worktrees of a repo; code must never use bare

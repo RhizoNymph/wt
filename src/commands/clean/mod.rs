@@ -75,7 +75,7 @@ pub fn run(repo: &Repo, args: &CleanArgs) -> anyhow::Result<ExitCode> {
         match process(&ctx, &target) {
             Ok(outcome) => report.record(outcome),
             Err(error) => {
-                tracing::error!(branch = %target.branch, path = %target.path.display(), error = %error, "clean failed");
+                tracing::warn!(branch = %target.branch, path = %target.path.display(), error = %error, "clean failed");
                 report.errors.push(Failure {
                     branch: Some(target.branch),
                     path: target.path,

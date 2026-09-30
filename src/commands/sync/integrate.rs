@@ -105,7 +105,7 @@ fn abort(git: &Git, args: [&str; 2]) -> bool {
             true
         }
         Err(error) => {
-            tracing::error!(dir = %git.dir().display(), op = args[0], error = %error, "abort failed");
+            tracing::warn!(dir = %git.dir().display(), op = args[0], error = %error, "abort failed");
             false
         }
     }
