@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -21,9 +22,11 @@ fn main() -> ExitCode {
     }
 }
 
+/// Commands print user-facing warnings in their reports, so logs stay quiet by
+/// default (errors only) and `-v` exposes the detail.
 fn init_tracing(verbose: u8) {
     let default = match verbose {
-        0 => "warn",
+        0 => "error",
         1 => "debug",
         _ => "trace",
     };
@@ -31,6 +34,7 @@ fn init_tracing(verbose: u8) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 }
 
